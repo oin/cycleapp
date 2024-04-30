@@ -54,4 +54,4 @@ make
 
 ## How to install
 
-Download the latest release, or `make RELEASE=1`, and copy the `cycleapp` binary to a directory in your `$PATH`.
+Download the [latest release](https://github.com/oin/cycleapp/releases), or `make RELEASE=1`, and copy the `cycleapp` binary to a directory in your `$PATH`.
