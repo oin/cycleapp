@@ -3,7 +3,15 @@
 #include <Foundation/Foundation.h>
 #include <unistd.h>
 
-const char* usage_format = 
+static bool running_only = false;
+static bool hide_on_end = false;
+static bool return_on_end = false;
+static bool hide_on_switch = false;
+static bool gentle_switch = false;
+static bool verbose = false;
+static NSApplicationActivationOptions activationOptions = 0;
+
+static const char* usage_format = 
 	"usage: %s [-reEsafv] com.application.bundle-identifier ...\n"
 	"\nCycle between the given applications.\n"
 	"If the application matching the first given bundle identifier is not running, find it, launch it and activate it. If it is running but not active, activate it. If it is active, repeat with the next application in the list. Once at the end, cycle back to the first application of the list. The behavior can be changed with different options.\n"
@@ -18,19 +26,42 @@ const char* usage_format =
 	"  -v Verbose mode (without arguments, show the bundle identifiers for all the running applications)\n"
 	;
 
+static bool on_cycle_end(NSArray *bundleIds, NSRunningApplication *appToReturnTo) {
+	if(hide_on_end) {
+		// Hide all running applications that are in the list
+		for(NSString *bundleId in bundleIds) {
+			NSRunningApplication *app = [[NSRunningApplication runningApplicationsWithBundleIdentifier:bundleId] firstObject];
+			if(app) {
+				if(verbose) {
+					printf("Hiding application '%s'\n", app.localizedName.UTF8String);
+				}
+				[app hide];
+			}
+		}
+
+		if(appToReturnTo) {
+			if(verbose) {
+				printf("Activating application '%s'\n", appToReturnTo.localizedName.UTF8String);
+			}
+			[appToReturnTo activateWithOptions:activationOptions];
+		} else if(verbose) {
+			printf("No application to return to.");
+		}
+
+		return true;
+	} else if(return_on_end) {
+		[appToReturnTo activateWithOptions:activationOptions];
+		return true;
+	}
+	return false;
+}
+
 int main(int argc, char const *argv[]) {
 	if(argc == 1) {
 		fprintf(stderr, usage_format, argv[0]);
 		return 1;
 	}
 
-	bool running_only = false;
-	bool hide_on_end = false;
-	bool return_on_end = false;
-	bool hide_on_switch = false;
-	bool gentle_switch = false;
-	bool verbose = false;
-	NSApplicationActivationOptions activationOptions = 0;
 	int c = 0;
 	while((c = getopt(argc, (char*const*)argv, "reEsafv")) != -1) {
 		switch(c) {
@@ -97,6 +128,9 @@ int main(int argc, char const *argv[]) {
 	}
 	[NSUserDefaults.standardUserDefaults setObject:now forKey:lastActivationTimeDefaultsKey];
 
+	NSString *bundleIdToReturnTo = [NSUserDefaults.standardUserDefaults objectForKey:lastAppBeforeDefaultsKey];
+	NSRunningApplication *appToReturnTo = bundleIdToReturnTo? [[NSRunningApplication runningApplicationsWithBundleIdentifier:bundleIdToReturnTo] firstObject] : nil;
+
 	// Get the current application
 	NSRunningApplication *current = [[NSWorkspace sharedWorkspace] frontmostApplication];
 	if(!current) {
@@ -124,28 +158,7 @@ int main(int argc, char const *argv[]) {
 		// Cycle to the next application in the list
 		++index;
 		if(index >= size) {
-			NSString *bundleIdToReturnTo = [NSUserDefaults.standardUserDefaults objectForKey:lastAppBeforeDefaultsKey];
-			NSRunningApplication *appToReturnTo = [[NSRunningApplication runningApplicationsWithBundleIdentifier:bundleIdToReturnTo] firstObject];
-			if(hide_on_end) {
-				// Hide all running applications that are in the list
-				for(NSString *bundleId in bundleIds) {
-					NSRunningApplication *app = [[NSRunningApplication runningApplicationsWithBundleIdentifier:bundleId] firstObject];
-					if(app) {
-						if(verbose) {
-							printf("Hiding application '%s'\n", app.localizedName.UTF8String);
-						}
-						[app hide];
-					}
-				}
-
-				if(verbose) {
-					printf("Activating application '%s'\n", appToReturnTo.localizedName.UTF8String);
-				}
-				[appToReturnTo activateWithOptions:activationOptions];
-
-				return 0;
-			} else if(return_on_end) {
-				[appToReturnTo activateWithOptions:activationOptions];
+			if(on_cycle_end(bundleIds, appToReturnTo)) {
 				return 0;
 			}
 			index = 0;
@@ -161,33 +174,54 @@ int main(int argc, char const *argv[]) {
 	}
 
 	// Find the next application in the list
-	NSString *nextBundleId = bundleIds[index];
-	NSRunningApplication *next = [[NSRunningApplication runningApplicationsWithBundleIdentifier:nextBundleId] firstObject];
-	if(next) {
-		if(verbose) {
-			printf("Activating application '%s'\n", next.localizedName.UTF8String);
-		}
-		[next activateWithOptions:activationOptions];
-	} else {
-		// Find the next application
-		NSWorkspace	*workspace = [NSWorkspace sharedWorkspace];
-		NSURL *url = [workspace URLForApplicationWithBundleIdentifier:nextBundleId];
-		if(!url) {
-			fprintf(stderr, "Error: Application with bundle identifier '%s' not found\n", nextBundleId.UTF8String);
-			return 3;
-		}
-		// Launch the next application
-		NSError *error = nil;
-		next = [workspace launchApplicationAtURL:url options:0 configuration:@{} error:&error];
-		if(!next) {
-			fprintf(stderr, "Error: Could not launch application at URL '%s'%s%s\n", url.absoluteString.UTF8String, error? ": " : "", error? error.localizedDescription.UTF8String : "");
-			return 4;
-		}
+	NSUInteger startingIndex = index;
+	while(true) {
+		NSString *nextBundleId = bundleIds[index];
+		NSRunningApplication *next = [[NSRunningApplication runningApplicationsWithBundleIdentifier:nextBundleId] firstObject];
+		if(next) {
+			if(verbose) {
+				printf("Activating application '%s'\n", next.localizedName.UTF8String);
+			}
+			[next activateWithOptions:activationOptions];
 
-		if(verbose) {
-			printf("Launched application '%s', activating.\n", next.localizedName.UTF8String);
+			return 0;
+		} else if(!running_only) {
+			// Find the next application
+			NSWorkspace	*workspace = [NSWorkspace sharedWorkspace];
+			NSURL *url = [workspace URLForApplicationWithBundleIdentifier:nextBundleId];
+			if(!url) {
+				fprintf(stderr, "Error: Application with bundle identifier '%s' not found\n", nextBundleId.UTF8String);
+				return 3;
+			}
+			// Launch the next application
+			NSError *error = nil;
+			next = [workspace launchApplicationAtURL:url options:0 configuration:@{} error:&error];
+			if(!next) {
+				fprintf(stderr, "Error: Could not launch application at URL '%s'%s%s\n", url.absoluteString.UTF8String, error? ": " : "", error? error.localizedDescription.UTF8String : "");
+				return 4;
+			}
+
+			if(verbose) {
+				printf("Launched application '%s', activating.\n", next.localizedName.UTF8String);
+			}
+			[next activateWithOptions:activationOptions];
+
+			return 0;
+		} else {
+			++index;
+			if(index >= size) {
+				if(on_cycle_end(bundleIds, appToReturnTo)) {
+					return 0;
+				}
+				index = 0;
+			}
+			if(index == startingIndex) {
+				if(verbose) {
+					printf("No application open in the list. Not doing anything.\n");
+				}
+				break;
+			}
 		}
-		[next activateWithOptions:activationOptions];
 	}
 
 	return 0;

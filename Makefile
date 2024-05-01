@@ -3,6 +3,8 @@ INSTALLDIR ?= ~/bin
 ifdef RELEASE
 MACOS_ARM ?= 1
 CCFLAGS := $(CCFLAGS) -O3 -mmacosx-version-min=10.9
+else
+CCFLAGS := $(CCFLAGS) -g -O0
 endif
 
 CCFLAGS := $(CCFLAGS) -fobjc-arc
